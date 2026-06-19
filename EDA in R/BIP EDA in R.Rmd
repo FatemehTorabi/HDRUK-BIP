@@ -1,0 +1,463 @@
+---
+title: "Diabetes Risk Factors in US Adults"
+subtitle: "An Exploratory Analysis using NHANES Open-Source Data"
+author: "fatemeh.torabi@pace.cam.ac.uk"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::readthedown
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, fig.align="center")
+
+# Chart palette: dark blue, red, grey
+COL_NAVY  <- "#1a3a5c"
+COL_RED   <- "#c0392b"
+COL_GREY  <- "#7f8c8d"
+COL_LGREY <- "#bdc3c7"
+
+pkgs <- c("NHANES","tidyverse","gtsummary","plotly","broom","scales","forcats","DT")
+invisible(lapply(pkgs, function(p) {
+  if (!requireNamespace(p, quietly=TRUE))
+    install.packages(p, repos="https://cloud.r-project.org")
+}))
+library(NHANES); library(tidyverse); library(gtsummary)
+library(plotly);  library(broom);    library(scales)
+library(forcats); library(DT)
+```
+
+---
+
+## 1. Background
+
+### 1.1 The global burden of diabetes
+
+Type 2 diabetes mellitus is one of the most prevalent chronic non-communicable diseases
+worldwide. According to the International Diabetes Federation (IDF), approximately
+**537 million adults** were living with diabetes in 2021, projected to rise to 783 million
+by 2045. In the United States alone, the CDC estimates that **37.3 million Americans**
+(~11.3%) have diabetes, with 96 million more classified as pre-diabetic.
+
+People living with diabetes face elevated risks of cardiovascular disease, stroke, chronic
+kidney disease, retinopathy, neuropathy, and lower-limb amputations. The American Diabetes
+Association estimated the total cost of diagnosed diabetes in the US at **$327 billion**
+in 2017.
+
+### 1.2 Risk factors: what do we know?
+
+- **Age** — insulin resistance and beta-cell dysfunction increase progressively with age.
+- **BMI** — excess adiposity is one of the strongest modifiable risk factors; obese
+  individuals face a 7–10× higher risk than those at healthy weight.
+- **Physical inactivity** — sedentary behaviour impairs glucose uptake and insulin
+  sensitivity; regular activity reduces incident diabetes risk.
+- **Smoking** — current smokers have ~30–40% greater risk than non-smokers, mediated
+  through systemic inflammation and oxidative stress.
+- **Socioeconomic status** — lower income limits access to nutritious food, recreational
+  facilities, and preventive healthcare.
+- **Race/ethnicity** — well-documented disparities exist across population groups,
+  reflecting both genetic susceptibility and structural inequalities.
+
+### 1.3 Research question
+
+> **Research Question:** *Which sociodemographic and lifestyle factors are independently
+> associated with self-reported diabetes diagnosis in US adults, after adjusting for
+> potential confounders?*
+
+### 1.4 Data source: NHANES
+
+The **National Health and Nutrition Examination Survey (NHANES)** combines interviews and
+standardised physical examinations in a nationally representative probability sample.
+The `NHANES` R package provides cleaned data from the 2009–2012 survey cycles (10,000
+observations, 76 variables), freely available on CRAN with no registration required.
+
+---
+
+## 2. Data Preparation
+
+### 2.1 Raw data preview
+
+The table below shows a 200-row random sample of raw NHANES restricted to analysis
+variables. Notice that `PhysActive`, `SmokeNow`, and `HHIncomeMid` contain `NA` values
+arising from NHANES survey routing — the cleaning steps below quantify this.
+
+```{r raw-preview}
+data(NHANES)
+NHANES %>%
+  select(ID, Gender, Age, Race1, BMI, PhysActive, SmokeNow, HHIncomeMid, Diabetes) %>%
+  sample_n(200) %>%
+  datatable(
+    caption="Table 0. Raw NHANES data (200-row sample, analysis variables only)",
+    rownames=FALSE, filter="top", extensions="Buttons",
+    options=list(pageLength=10, dom="Bfrtip",
+                 buttons=c("copy","csv","excel"), scrollX=TRUE)
+  )
+```
+
+### 2.2 Cohort construction & cleaning
+
+| Step | Action |
+|------|--------|
+| Age restriction | Adults aged 20–79 only |
+| De-duplication | One record per participant (`distinct(ID)`) |
+| Outcome coding | Diabetes Yes → 1, No → 0; `NA` excluded |
+| BMI category | Underweight / Normal / Overweight / Obese |
+| Age group | Four bands: 20–39, 40–54, 55–69, 70–79 |
+| Income | `HHIncomeMid ÷ 1,000` (USD thousands) |
+| Complete-case | Drop rows with `NA` in any analysis variable |
+
+```{r cohort}
+cohort_raw <- NHANES %>%
+  filter(Age >= 20, Age < 80) %>%
+  distinct(ID, .keep_all=TRUE) %>%
+  select(ID, Gender, Age, Race1, BMI, PhysActive, SmokeNow, HHIncomeMid, Diabetes)
+
+n_start      <- nrow(cohort_raw)
+n_miss_diab  <- sum(is.na(cohort_raw$Diabetes))
+n_miss_bmi   <- sum(is.na(cohort_raw$BMI))
+n_miss_phys  <- sum(is.na(cohort_raw$PhysActive))
+n_miss_smoke <- sum(is.na(cohort_raw$SmokeNow))
+n_miss_inc   <- sum(is.na(cohort_raw$HHIncomeMid))
+
+cohort <- cohort_raw %>%
+  mutate(
+    Diabetes   = if_else(Diabetes == "Yes", 1L, 0L),
+    PhysActive = factor(PhysActive, levels=c("Yes","No"),
+                        labels=c("Active","Inactive")),
+    SmokeNow   = factor(SmokeNow, levels=c("Yes","No"),
+                        labels=c("Current smoker","Non-smoker")),
+    Gender     = factor(Gender),
+    Race1      = factor(Race1),
+    AgeGroup   = cut(Age, breaks=c(20,40,55,70,80),
+                     labels=c("20–39","40–54","55–69","70–79"), right=FALSE),
+    BMI_cat    = cut(BMI, breaks=c(0,18.5,25,30,Inf),
+                     labels=c("Underweight","Normal","Overweight","Obese"),
+                     right=FALSE),
+    Income_k   = HHIncomeMid / 1000
+  ) %>%
+  filter(!is.na(Diabetes), !is.na(BMI), !is.na(PhysActive),
+         !is.na(SmokeNow), !is.na(HHIncomeMid), !is.na(Race1))
+
+n_final    <- nrow(cohort)
+n_excluded <- n_start - n_final
+
+tibble::tribble(
+  ~Stage,                              ~N,
+  "Adults 20–79 after age filter",     n_start,
+  "Missing: Diabetes outcome",         n_miss_diab,
+  "Missing: BMI",                      n_miss_bmi,
+  "Missing: Physical activity",        n_miss_phys,
+  "Missing: Smoking status",           n_miss_smoke,
+  "Missing: Household income",         n_miss_inc,
+  "────────────────────────────────", NA_integer_,
+  "Final analysis-ready cohort",       n_final
+) %>%
+  knitr::kable(caption="Cleaning flow — records excluded at each stage",
+               col.names=c("Stage","N excluded / remaining"))
+```
+
+The largest source of missingness is smoking status (`r n_miss_smoke` records), a
+structural NHANES routing feature rather than random non-response. Complete-case analysis
+excludes **`r format(n_excluded, big.mark=",")`** participants, leaving a final cohort of
+**`r format(n_final, big.mark=",")`**.
+
+### 2.3 Analysis-ready cohort preview
+
+```{r cohort-preview}
+cohort %>%
+  select(ID, Gender, AgeGroup, Race1, BMI, BMI_cat,
+         PhysActive, SmokeNow, Income_k, Diabetes) %>%
+  head(200) %>%
+  datatable(
+    caption="Table 0b. Analysis-ready cohort (first 200 rows)",
+    rownames=FALSE, filter="top", extensions="Buttons",
+    options=list(pageLength=10, dom="Bfrtip",
+                 buttons=c("copy","csv","excel"), scrollX=TRUE)
+  )
+```
+
+> **Final cohort:** `r format(n_final, big.mark=",")` participants ·
+> `r sum(cohort$Diabetes)` diabetes cases
+> (`r sprintf("%.1f%%", 100*mean(cohort$Diabetes))` crude prevalence) ·
+> `r format(n_excluded, big.mark=",")` excluded due to missing data.
+
+---
+
+## 3. Cohort Summary (TableOne)
+
+```{r tableone}
+cohort %>%
+  select(Gender, AgeGroup, BMI_cat, PhysActive, SmokeNow, Income_k, Diabetes) %>%
+  mutate(Diabetes = factor(Diabetes, labels=c("No Diabetes","Diabetes"))) %>%
+  tbl_summary(
+    by        = Diabetes,
+    label     = list(Gender~"Sex", AgeGroup~"Age group", BMI_cat~"BMI category",
+                     PhysActive~"Physical activity", SmokeNow~"Current smoker",
+                     Income_k~"Household income (USD thousands)"),
+    statistic = list(all_continuous()~"{median} ({p25}, {p75})",
+                     all_categorical()~"{n} ({p}%)"),
+    missing   = "no"
+  ) %>%
+  add_p() %>% add_overall() %>% bold_labels() %>%
+  modify_caption("**Table 1. Cohort characteristics by diabetes status**")
+```
+
+**Interpretation:** Every variable differs significantly between groups (all p < 0.05),
+confirming that diabetes is not randomly distributed. Key patterns:
+
+- **Age** — participants with diabetes are substantially older; the 55–69 and 70–79 bands
+  are heavily over-represented in the diabetes group, consistent with cumulative metabolic
+  burden over time.
+- **BMI** — the obese category accounts for a markedly higher share of diabetes cases,
+  reflecting the adiposity–insulin resistance pathway.
+- **Physical activity** — a greater proportion of inactive participants have diabetes,
+  suggesting sedentary behaviour is associated with higher disease burden.
+- **Household income** — median income is lower in the diabetes group, consistent with
+  socioeconomic gradients in chronic disease.
+- **Smoking** — distributional differences are present though direction is nuanced, partly
+  due to survivorship effects (heavier smokers may have died before the survey).
+
+These univariate differences motivate the multivariable model in Section 5, which
+disentangles the independent contribution of each factor.
+
+---
+
+## 4. Exploratory Visualisations
+
+### 4.1 Age distribution by diabetes status
+
+```{r plot-age, fig.height=4}
+cohort %>%
+  mutate(Status = if_else(Diabetes==1,"Diabetes","No Diabetes")) %>%
+  plot_ly(x=~Age, color=~Status,
+          colors=c("No Diabetes"=COL_NAVY, "Diabetes"=COL_RED),
+          type="histogram", alpha=0.70, nbinsx=30) %>%
+  layout(barmode="overlay",
+         title=list(text="Age Distribution by Diabetes Status",
+                    font=list(size=15)),
+         xaxis=list(title="Age (years)"),
+         yaxis=list(title="Count"),
+         legend=list(title=list(text="Status")))
+```
+
+**Interpretation:** The no-diabetes group (dark blue) is broadly distributed across adult
+age bands with a roughly bell-shaped peak in mid-life. The diabetes group (red) shows a
+right-skewed distribution concentrated in the 50–70 age range, with very few cases under
+40. This rightward shift highlights age as one of the dominant drivers of diabetes
+prevalence. The near-absence of diabetes below age 35 is consistent with the typically
+long prodromal period of type 2 diabetes, during which insulin resistance develops
+silently before clinical diagnosis.
+
+---
+
+### 4.2 BMI by physical activity and diabetes
+
+```{r plot-bmi, fig.height=4}
+cohort %>%
+  mutate(Status = if_else(Diabetes==1,"Diabetes","No Diabetes")) %>%
+  plot_ly(x=~PhysActive, y=~BMI, color=~Status,
+          colors=c("No Diabetes"=COL_NAVY, "Diabetes"=COL_RED),
+          type="box", boxpoints="outliers") %>%
+  layout(boxmode="group",
+         title=list(text="BMI by Physical Activity and Diabetes Status",
+                    font=list(size=15)),
+         xaxis=list(title="Physical Activity Status"),
+         yaxis=list(title="BMI (kg/m²)"),
+         legend=list(title=list(text="Status")))
+```
+
+**Interpretation:** Across both activity groups, participants with diabetes (red boxes)
+have noticeably higher median BMI than those without (dark blue), underlining the
+adiposity–diabetes link. Within the diabetes group, inactive participants have slightly
+higher BMI than active ones, suggesting inactivity compounds the metabolic effect of
+excess weight. Critically, even among active participants, those with diabetes maintain
+higher BMI than their active non-diabetic counterparts — demonstrating that physical
+activity alone does not fully offset obesity-related metabolic risk. Exercise and weight
+management are complementary, not interchangeable, strategies.
+
+---
+
+### 4.3 Diabetes prevalence by age group and BMI category
+
+```{r plot-prev, fig.height=4}
+cohort %>%
+  group_by(AgeGroup, BMI_cat) %>%
+  summarise(prevalence=100*mean(Diabetes), n=n(), .groups="drop") %>%
+  filter(!is.na(BMI_cat)) %>%
+  plot_ly(x=~AgeGroup, y=~prevalence, color=~BMI_cat,
+          colors=c("Underweight"=COL_LGREY, "Normal"=COL_NAVY,
+                   "Overweight"=COL_GREY,   "Obese"=COL_RED),
+          type="bar",
+          text=~paste0("n = ",n,"<br>Prevalence = ",round(prevalence,1),"%"),
+          hovertemplate="%{text}<extra></extra>") %>%
+  layout(barmode="group",
+         title=list(text="Diabetes Prevalence by Age Group and BMI Category",
+                    font=list(size=15)),
+         xaxis=list(title="Age Group"),
+         yaxis=list(title="Prevalence (%)"),
+         legend=list(title=list(text="BMI Category")))
+```
+
+**Interpretation:** Two clear gradients are visible simultaneously. Within every BMI
+category, prevalence rises consistently with age — the 70–79 band is highest regardless
+of weight. Within every age band, obese participants (red bars) carry the highest
+prevalence, followed by overweight (grey), normal (dark blue), and underweight (light
+grey). The joint effect is starkest in older obese adults, where prevalence exceeds 40%
+in some cells. Normal-weight adults maintain considerably lower prevalence across all age
+groups, reinforcing healthy weight maintenance as a priority prevention target.
+
+---
+
+## 5. Logistic Regression Model
+
+We fit a multivariable logistic regression with diabetes (1/0) as the binary outcome,
+adjusting simultaneously for all covariates. Results are expressed as **odds ratios (OR)**
+with 95% confidence intervals. OR > 1 = increased odds; OR < 1 = reduced odds, relative
+to the reference category (female sex, White race, physically active, current smoker).
+
+```{r model}
+model <- glm(
+  Diabetes ~ Age + Gender + BMI + PhysActive + SmokeNow + Income_k + Race1,
+  data=cohort, family=binomial(link="logit")
+)
+
+model_tbl <- tidy(model, exponentiate=TRUE, conf.int=TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(term,
+      "Age"                = "Age (per year)",
+      "GenderMale"         = "Male sex",
+      "BMI"                = "BMI (per unit)",
+      "PhysActiveInactive" = "Physically inactive",
+      "SmokeNowNon-smoker" = "Non-smoker (ref: current smoker)",
+      "Income_k"           = "Household income (per $1k)",
+      "Race1Asian"         = "Race: Asian",
+      "Race1Black"         = "Race: Black",
+      "Race1Hispanic"      = "Race: Hispanic",
+      "Race1Mexican"       = "Race: Mexican",
+      "Race1Other"         = "Race: Other / Other White"
+    ),
+    significant = p.value < 0.05
+  )
+
+model_tbl %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  mutate(across(c(estimate,conf.low,conf.high), ~round(.x,2)),
+         p.value=if_else(p.value<0.001,"<0.001",
+                         as.character(round(p.value,3)))) %>%
+  rename(Predictor=term, OR=estimate,
+         `95% CI Lo`=conf.low, `95% CI Hi`=conf.high, `P-value`=p.value) %>%
+  knitr::kable(caption="Table 2. Adjusted odds ratios — multivariable logistic regression")
+```
+
+**Interpretation:** After full adjustment, several factors remain independently and
+significantly associated with diabetes. Age and BMI show the most consistent effects:
+each additional year of age and each one-unit BMI increase both raise the odds of
+diabetes independent of all other factors in the model. Physical inactivity raises odds
+beyond what BMI alone explains, confirming that exercise confers metabolic benefit
+independently of weight. Higher household income is modestly protective. Smoking and male
+sex do not reach significance after adjustment, likely reflecting confounding by the
+correlated variables already in the model. Racial disparities persist even after
+socioeconomic and lifestyle adjustment, pointing to structural and biological factors not
+fully captured here.
+
+---
+
+## 6. Forest Plot
+
+```{r forest-plot, fig.height=6.5, fig.width=9}
+model_tbl %>%
+  mutate(term = fct_reorder(term, estimate)) %>%
+  ggplot(aes(x=estimate, y=term, colour=significant)) +
+  geom_vline(xintercept=1, linetype="dashed", colour="grey40", linewidth=0.7) +
+  geom_errorbarh(aes(xmin=conf.low, xmax=conf.high),
+                 height=0.25, linewidth=0.9) +
+  geom_point(size=3.5, shape=18) +
+  scale_colour_manual(
+    values = c("TRUE"=COL_RED, "FALSE"=COL_GREY),
+    labels = c("TRUE"="p < 0.05", "FALSE"="p \u2265 0.05"),
+    name   = NULL
+  ) +
+  scale_x_log10(breaks=c(0.5,0.75,1,1.25,1.5,2,3,4),
+                labels=label_number(accuracy=0.01)) +
+  labs(title    = "Forest Plot: Adjusted Odds Ratios for Diabetes",
+       subtitle = "Multivariable logistic regression \u00b7 NHANES adults aged 20\u201379",
+       x        = "Odds Ratio (log scale)", y=NULL,
+       caption  = "Error bars = 95% CI  \u00b7  Red = p < 0.05  \u00b7  Grey = p \u2265 0.05") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(face="bold",size=14),
+        plot.subtitle=element_text(colour="grey45",size=11),
+        plot.caption=element_text(colour="grey55",size=9),
+        panel.grid.major.x=element_line(colour="grey85"),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.y=element_blank(),
+        legend.position="top",
+        axis.text.y=element_text(size=10))
+```
+
+**Interpretation:** Reading from the bottom (lowest OR) upward:
+
+- **Household income** (red, OR < 1) sits left of the null line — each additional $1,000
+  of income is associated with *reduced* odds of diabetes, confirming its protective role.
+- **Non-smoker** and **male sex** are grey — their CIs cross OR = 1 after adjustment,
+  meaning no independent significant effect is detectable in this sample.
+- **BMI** and **physical inactivity** are red and sit right of the null, confirming
+  independent increases in odds.
+- **Age** has one of the strongest effects on the log scale: even a per-year increment
+  yields an OR meaningfully above 1.0, with a very narrow CI — high precision and strong
+  statistical significance.
+- **Race: Mexican and Hispanic** show the largest ORs among race/ethnicity terms, both
+  statistically significant with CIs entirely above 1.0, even after income, BMI, and
+  activity are controlled — pointing to residual structural and potential genetic factors.
+- **CI width** reflects sample size: wider bars (e.g. Race: Other) signal fewer
+  participants in that category and correspondingly greater uncertainty.
+
+---
+
+## 7. Summary & Conclusions
+
+```{r findings, echo=FALSE}
+sig     <- model_tbl %>% filter(significant) %>% arrange(estimate)
+bmi_or  <- round(filter(model_tbl, grepl("BMI \\(per", term))$estimate, 2)
+age_or  <- round(filter(model_tbl, grepl("Age", term))$estimate, 3)
+inc_or  <- round(filter(model_tbl, grepl("income", term, ignore.case = TRUE))$estimate, 2)
+phys_or <- round(filter(model_tbl, grepl("inactive", term, ignore.case = TRUE))$estimate, 2)
+```
+
+This analysis used cross-sectional data from `r format(n_final, big.mark = ",")` US
+adults (2009–2012 NHANES) to examine factors associated with diabetes diagnosis.
+Multivariable logistic regression identified **`r nrow(sig)` statistically significant
+independent predictors**:
+
+| Predictor | Direction | Adjusted OR |
+|-----------|-----------|-------------|
+| Age (per year) | Risk ↑ | `r age_or` |
+| BMI (per unit) | Risk ↑ | `r bmi_or` |
+| Physically inactive | Risk ↑ | `r phys_or` |
+| Household income (per $1k) | Protective ↓ | `r inc_or` |
+
+**Key messages for public health:**
+
+1. **BMI is the most actionable independent risk factor** — it is modifiable and its
+   effect persists after full adjustment. Population-level interventions targeting healthy
+   weight through diet quality and built-environment changes are warranted.
+2. **Physical activity confers independent benefit beyond weight** — promoting exercise
+   should be a priority even in groups where significant weight loss is unlikely.
+3. **Socioeconomic disadvantage amplifies risk** — interventions that address food
+   insecurity, income inequality, and neighbourhood resources may reduce diabetes
+   incidence in lower-income populations.
+4. **Racial and ethnic disparities persist after covariate adjustment** — this signals
+   the need for targeted screening programmes and further research into structural
+   determinants not captured by income alone.
+
+**Limitations:** This is a cross-sectional observational analysis; causality cannot be
+inferred from these associations. Complete-case analysis was used, which assumes data are
+missing at random — an assumption that may not fully hold for smoking status. Survey
+sampling weights were not applied, so point estimates are not precisely nationally
+representative. Unmeasured confounders (diet quality, family history, medication use) may
+bias associations in unpredictable directions.
+
+---
+
+*Data source: `NHANES` R package (CDC/NCHS, 2009–2012 survey cycles). Analysis restricted
+to `r format(n_final, big.mark = ",")` adults aged 20–79 with complete data on all study
+variables.*

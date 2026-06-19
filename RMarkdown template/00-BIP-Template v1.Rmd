@@ -1,0 +1,171 @@
+---
+title: "The title of your report"
+subtitle: "The subtitle of your report"
+author: "your name or email"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    code_folding: hide
+    highlight: tango
+---
+
+<style>
+/* ── Global palette: dark navy, red, grey ── */
+body {
+  background-color: #0d1b2a;
+  color: #d6dde8;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  font-size: 15px;
+}
+
+h1, h2, h3, h4 {
+  color: #e8edf4;
+  border-bottom: 2px solid #c0392b;
+  padding-bottom: 4px;
+}
+
+/* Floating TOC */
+.tocify {
+  background-color: #162032 !important;
+  border: 1px solid #c0392b !important;
+}
+.tocify-header, .tocify-item {
+  background-color: #162032 !important;
+  color: #aab4c4 !important;
+}
+.tocify-item.active {
+  background-color: #c0392b !important;
+  color: #ffffff !important;
+}
+
+/* Main content area */
+.main-container {
+  background-color: #111e2e;
+  border-radius: 6px;
+  padding: 20px 30px;
+}
+
+/* Code chunks */
+pre, code {
+  background-color: #162032 !important;
+  color: #aecbfa !important;
+  border: 1px solid #2a3f5a;
+  border-radius: 4px;
+}
+
+/* Inline code */
+p code {
+  color: #e06c75 !important;
+  background-color: #1e2f45 !important;
+}
+
+/* kable / DT tables */
+table {
+  background-color: #162032 !important;
+  color: #d6dde8 !important;
+  border-collapse: collapse;
+  width: 100%;
+}
+th {
+  background-color: #c0392b !important;
+  color: #ffffff !important;
+  padding: 8px 12px;
+}
+td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #1e3a5a;
+}
+tr:nth-child(even) { background-color: #1a2c42 !important; }
+tr:hover           { background-color: #223348 !important; }
+
+/* gtsummary */
+.gt_table {
+  background-color: #162032 !important;
+  color: #d6dde8 !important;
+}
+.gt_col_heading {
+  background-color: #c0392b !important;
+  color: #ffffff !important;
+}
+
+/* Callout boxes */
+.callout {
+  background-color: #162032;
+  border-left: 4px solid #c0392b;
+  padding: 12px 16px;
+  border-radius: 4px;
+  margin: 16px 0;
+}
+
+/* Horizontal rule */
+hr {
+  border-color: #2a3f5a;
+  margin: 28px 0;
+}
+
+/* Code fold button */
+.code-folding-btn {
+  background-color: #c0392b !important;
+  color: #fff !important;
+  border: none !important;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.align = "center"
+)
+
+# ── Palette constants (reused across all plots) ──────────────────────────────
+COL_RED   <- "#c0392b"
+COL_NAVY  <- "#1a6fa8"
+COL_GREY  <- "#7f8c8d"
+COL_DARK  <- "#0d1b2a"
+PALETTE_4 <- c("#1a6fa8", "#7f8c8d", "#c0392b", "#e8c547")
+
+# ── Auto-install & load packages ─────────────────────────────────────────────
+pkgs <- c("NHANES", "tidyverse", "gtsummary", "plotly",
+          "broom", "scales", "forcats", "DT")
+invisible(lapply(pkgs, function(p) {
+  if (!requireNamespace(p, quietly = TRUE))
+    install.packages(p, repos = "https://cloud.r-project.org")
+}))
+
+library(NHANES); library(tidyverse); library(gtsummary)
+library(plotly);  library(broom);    library(scales)
+library(forcats); library(DT)
+```
+
+---
+
+# Heading one
+
+## Heading two
+
+### Heading three
+
+*italic text*
+
+**Bold text**
+
+
+Manual table
+
+| Step | Action |
+|------|--------|
+| **Age restriction** | Adults aged 20–79 only |
+| **De-duplication** | One record per participant (`distinct(ID)`) |
+| **Outcome coding** | Diabetes Yes → 1, No → 0 |
+| **BMI category** | Underweight / Normal / Overweight / Obese |
+| **Age group** | Four bands: 20–39, 40–54, 55–69, 70–79 |
+| **Income** | `HHIncomeMid ÷ 1,000` (USD thousands) |
+| **Complete-case** | Drop rows with `NA` in any analysis variable |
